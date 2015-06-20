@@ -2,7 +2,22 @@
 
 @implementation SVGKSourceURL
 
+-(NSString *)keyForAppleDictionaries
+{
+	return [self.URL absoluteString];
+}
+
 + (SVGKSource*)sourceFromURL:(NSURL*)u {
+	NSInputStream* stream = [self internalCreateInputStreamFromURL:u];
+	
+	SVGKSourceURL* s = [[[SVGKSourceURL alloc] initWithInputSteam:stream] autorelease];
+	s.URL = u;
+	
+	return s;
+}
+
++(NSInputStream*) internalCreateInputStreamFromURL:(NSURL*) u
+{
 	NSInputStream* stream = [NSInputStream inputStreamWithURL:u];
 	
 	if( stream == nil )
@@ -11,15 +26,35 @@
 		 c.f. http://stackoverflow.com/questions/20571069/i-cannot-initialize-a-nsinputstream
 		 
 		 NB: current Apple docs don't seem to mention this - certainly not in the inputStreamWithURL: method? */
-		NSData *tempData = [NSData dataWithContentsOfURL:u]; 
-		stream = [[[NSInputStream alloc] initWithData:tempData] autorelease]; 
+		NSError* errorWithNSData;
+		NSData *tempData = [NSData dataWithContentsOfURL:u options:0 error:&errorWithNSData];
+		
+		if( tempData == nil )
+		{
+			@throw [NSException exceptionWithName:@"NSDataCrashed" reason:[NSString stringWithFormat:@"Error internally in Apple's NSData trying to read from URL '%@'. Error = %@", u, errorWithNSData] userInfo:@{NSLocalizedDescriptionKey:errorWithNSData}];
+		}
+		else
+			stream = [[[NSInputStream alloc] initWithData:tempData] autorelease];
 	}
 	//DO NOT DO THIS: let the parser do it at last possible moment (Apple has threading problems otherwise!) [stream open];
 	
-	SVGKSourceURL* s = [[[SVGKSourceURL alloc] initWithInputSteam:stream] autorelease];
-	s.URL = u;
+	return stream;
+}
+
+-(id)copyWithZone:(NSZone *)zone
+{
+	id copy = [super copyWithZone:zone];
 	
-	return s;
+	if( copy )
+	{	
+		/** clone bits */
+		[copy setURL:[[self.URL copy] autorelease]];
+		
+		/** Finally, manually intialize the input stream, as required by super class */
+		[copy setStream:[[self class] internalCreateInputStreamFromURL:((SVGKSourceURL*)copy).URL]];
+	}
+	
+	return copy;
 }
 
 - (SVGKSource *)sourceFromRelativePath:(NSString *)path {

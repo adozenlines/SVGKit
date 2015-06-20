@@ -91,8 +91,12 @@ void CGPathAddRoundedRect (CGMutablePathRef path, CGRect rect, CGFloat radiusX, 
 	 Create a square OR rounded rectangle as a CGPath
 	 
 	 */
+
+    SVGRect r = parseResult.rootOfSVGTree.viewport;
+
 	CGMutablePathRef path = CGPathCreateMutable();
-	CGRect rect = CGRectMake([_x pixelsValue], [_y pixelsValue], [_width pixelsValue], [_height pixelsValue]);
+    CGRect rect = CGRectMake([_x pixelsValueWithDimension:r.x], [_y pixelsValueWithDimension:r.y],
+                             [_width pixelsValueWithDimension:r.width], [_height pixelsValueWithDimension:r.height]);
 	
 	CGFloat radiusXPixels = _rx != nil ? [_rx pixelsValue] : 0;
 	CGFloat radiusYPixels = _ry != nil ? [_ry pixelsValue] : 0;
@@ -107,6 +111,12 @@ void CGPathAddRoundedRect (CGMutablePathRef path, CGRect rect, CGFloat radiusX, 
 			radiusYPixels = radiusXPixels;
 		else if( radiusXPixels == 0 && radiusYPixels > 0 ) // if RX unspecified, make it equal to RY
 			radiusXPixels = radiusYPixels;
+        
+        if( radiusXPixels > CGRectGetWidth(rect) / 2 ) // give RX max value of half rect width
+            radiusXPixels = CGRectGetWidth(rect) / 2;
+        
+        if( radiusYPixels > CGRectGetHeight(rect) / 2 ) // give RY max value of half rect height
+            radiusYPixels = CGRectGetHeight(rect) / 2;
 		
 		CGPathAddRoundedRect(path,
 #if __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_7_0 

@@ -7,13 +7,16 @@
 #import "SVGPathElement.h"
 #import "SVGUseElement.h"
 #import "SVGClipPathElement.h"
+#import "SVGSwitchElement.h"
+#import "NodeList+Mutable.h"
 
 #import "SVGSVGElement_Mutable.h" // so that changing .size can change the SVG's .viewport
 
 #import "SVGKParserSVG.h"
 
-#import "SVGKSourceLocalFile.h"
-#import "SVGKSourceURL.h"
+#import "SVGKSourceLocalFile.h" // for convenience constructors that load from filename
+#import "SVGKSourceURL.h" // for convenience constructors that load from URL as string
+#import "SVGKSourceNSData.h" // for convenience constructors that load from raw incoming NSData
 
 #import "CALayer+RecursiveClone.h"
 
@@ -77,61 +80,13 @@ static NSMutableDictionary* globalSVGKImageCache;
 {
 	if ([globalSVGKImageCache count] == 0) return;
 	
-	DDLogCWarn(@"[%@] Low-mem or background; purging cache of %lu SVGKImages...", self, (unsigned long)[globalSVGKImageCache count] );
+	DDLogWarn(@"[%@] Low-mem or background; purging cache of %lu SVGKImages...", self, (unsigned long)[globalSVGKImageCache count] );
 	
 	[globalSVGKImageCache removeAllObjects]; // once they leave the cache, if they are no longer referred to, they should automatically dealloc
 }
 #endif
 
 #pragma mark - Convenience initializers
-+(SVGKSource*) internalSourceAnywhereInBundleUsingName:(NSString*) name
-{
-	NSParameterAssert(name != nil);
-	
-	/** Apple's File APIs are very very bad and require you to strip the extension HALF the time.
-	 
-	 The other HALF the time, they fail unless you KEEP the extension.
-	 
-	 It's a mess!
-	 */
-	NSString *newName = [name stringByDeletingPathExtension];
-	NSString *extension = [name pathExtension];
-    if ([@"" isEqualToString:extension]) {
-        extension = @"svg";
-    }
-	
-	/** First, try to find it in the project BUNDLE (this was HARD CODED at compile time; can never be changed!) */
-	NSString *pathToFileInBundle = nil;
-	NSBundle *bundle = [NSBundle mainBundle];
-	if( bundle != nil )
-	{
-		pathToFileInBundle = [bundle pathForResource:newName ofType:extension];
-	}
-	
-	/** Second, try to find it in the Documents folder (this is where Apple expects you to store custom files at runtime) */
-	NSString* pathToFileInDocumentsFolder = nil;
-	NSString* pathToDocumentsFolder = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-	if( pathToDocumentsFolder != nil )
-	{
-		pathToFileInDocumentsFolder = [[pathToDocumentsFolder stringByAppendingPathComponent:newName] stringByAppendingPathExtension:extension];
-		if( [[NSFileManager defaultManager] fileExistsAtPath:pathToFileInDocumentsFolder])
-			;
-		else
-			pathToFileInDocumentsFolder = nil; // couldn't find a file there
-	}
-	
-	if( pathToFileInBundle == nil
-	   && pathToFileInDocumentsFolder == nil )
-	{
-		DDLogCWarn(@"[%@] MISSING FILE (not found in App-bundle, not found in Documents folder), COULD NOT CREATE DOCUMENT: filename = %@, extension = %@", [self class], newName, extension);
-		return nil;
-	}
-	
-	/** Prefer the Documents-folder version over the Bundle version (allows you to have a default, and override at runtime) */
-	SVGKSourceLocalFile* source = [SVGKSourceLocalFile sourceFromFilename: pathToFileInDocumentsFolder == nil ? pathToFileInBundle : pathToFileInDocumentsFolder];
-	
-	return source;
-}
 
 + (SVGKImage *)imageNamed:(NSString *)name
 {	
@@ -149,7 +104,7 @@ static NSMutableDictionary* globalSVGKImageCache;
     }
 #endif
 	
-	SVGKSource* source = [self internalSourceAnywhereInBundleUsingName:name];
+	SVGKSource* source = [SVGKSourceLocalFile internalSourceAnywhereInBundleUsingName:name];
 	
 	/**
 	 Key moment: init and parse the SVGKImage
@@ -177,6 +132,11 @@ static NSMutableDictionary* globalSVGKImageCache;
 }
 
 +(SVGKParser *) imageAsynchronouslyNamed:(NSString *)name onCompletion:(SVGKImageAsynchronousLoadingDelegate)blockCompleted
+{
+	return [self imageWithSource:[SVGKSourceLocalFile internalSourceAnywhereInBundleUsingName:name] onCompletion:blockCompleted];
+}
+
++(SVGKParser *) imageWithSource:(SVGKSource *)source onCompletion:(SVGKImageAsynchronousLoadingDelegate)blockCompleted
 {	
 #if ENABLE_GLOBAL_IMAGE_CACHE_FOR_SVGKIMAGE_IMAGE_NAMED
     if( globalSVGKImageCache == nil )
@@ -184,17 +144,15 @@ static NSMutableDictionary* globalSVGKImageCache;
         globalSVGKImageCache = [NSMutableDictionary new];
     }
     
-    SVGKImageCacheLine* cacheLine = [globalSVGKImageCache valueForKey:name];
+    SVGKImageCacheLine* cacheLine = [globalSVGKImageCache valueForKey:source.keyForAppleDictionaries];
     if( cacheLine != nil )
     {
         cacheLine.numberOfInstances ++;
 		
-		blockCompleted( cacheLine.mainInstance );
+		blockCompleted( cacheLine.mainInstance, /** (TODO: add a way for parse-results to chain each other, and say "I'm the cached version of this OTHER parseresult") original parse result: */ cacheLine.mainInstance.parseErrorsAndWarnings );
         return nil;
     }
 #endif
-	
-	SVGKSource* source = [self internalSourceAnywhereInBundleUsingName:name];
 	
 	/**
 	 Key moment: init and parse the SVGKImage
@@ -211,20 +169,20 @@ static NSMutableDictionary* globalSVGKImageCache;
 					   if( finalImage != nil )
 					   {
 						   finalImage->cameFromGlobalCache = TRUE;
-						   finalImage.nameUsedToInstantiate = name;
+						   finalImage.nameUsedToInstantiate = source.keyForAppleDictionaries;
 						   
 						   SVGKImageCacheLine* newCacheLine = [[[SVGKImageCacheLine alloc] init] autorelease];
 						   newCacheLine.mainInstance = finalImage;
 						   
-						   [globalSVGKImageCache setValue:newCacheLine forKey:name];
+						   [globalSVGKImageCache setValue:newCacheLine forKey:source.keyForAppleDictionaries];
 					   }
 					   else
 					   {
-						   NSLog(@"[%@] WARNING: not caching the output for new SVG image with name = %@, because it failed to load correctly", [self class], name );
+						   NSLog(@"[%@] WARNING: not caching the output for new SVG image with source = %@, because it failed to load correctly", [self class], source );
 					   }
 #endif
 					   
-					   blockCompleted( finalImage );
+					   blockCompleted( finalImage, parsedSVG );
 				   });
 	
     return parser;
@@ -313,6 +271,15 @@ static NSMutableDictionary* globalSVGKImageCache;
 	NSParameterAssert(url != nil);
 	
 	return [self initWithSource:[SVGKSourceURL sourceFromURL:url]];
+}
+
+- (id)initWithData:(NSData *)data
+{
+	NSParameterAssert(data != nil);
+	
+	DDLogWarn(@"Creating an SVG from raw data; this is not recommended: SVG requires knowledge of at least the URL where it came from (as it can contain relative file-links internally). You should use the method [SVGKImage initWithSource:] instead and specify an SVGKSource with more detail" );
+	
+	return [self initWithSource:[SVGKSourceNSData sourceFromData:data URLForRelativeLinks:nil]];
 }
 
 - (void)dealloc
@@ -611,16 +578,27 @@ static NSMutableDictionary* globalSVGKImageCache;
 	//DEBUG: DDLogVerbose(@"[%@] DEBUG: converted SVG element (class:%@) to CALayer (class:%@ frame:%@ pointer:%@) for id = %@", [self class], NSStringFromClass([element class]), NSStringFromClass([layer class]), NSStringFromCGRect( layer.frame ), layer, element.identifier);
 	
 	NodeList* childNodes = element.childNodes;
-	
+	Node* saveParentNode = nil;
 	/**
 	 Special handling for <use> tags - they have to masquerade invisibly as the node they are referring to
 	 */
 	if( [element isKindOfClass:[SVGUseElement class]] )
 	{
 		SVGUseElement* useElement = (SVGUseElement*) element;
-		childNodes = useElement.instanceRoot.correspondingElement.childNodes;
+		element = (SVGElement <ConverterSVGToCALayer> *)useElement.instanceRoot.correspondingElement;
+		
+		saveParentNode = element.parentNode;
+		element.parentNode = useElement;
+
+		NodeList* nodeList = [[NodeList alloc] init];
+		[nodeList.internalArray addObject:element];
+		childNodes = [nodeList autorelease];
     }
-    
+    else
+    if ( [element isKindOfClass:[SVGSwitchElement class]] )
+    {
+        childNodes = [(SVGSwitchElement*) element visibleChildNodes];
+    }
     /**
      Special handling for clip-path; need to create their children
      */
@@ -654,7 +632,7 @@ static NSMutableDictionary* globalSVGKImageCache;
         
         [clipPathElement layoutLayer:clipLayer toMaskLayer:layer];
         
-        DDLogCWarn(@"DOESNT WORK, APPLE's API APPEARS BROKEN???? - About to mask layer frame (%@) with a mask of frame (%@)", NSStringFromCGRect(layer.frame), NSStringFromCGRect(clipLayer.frame));
+        DDLogWarn(@"DOESNT WORK, APPLE's API APPEARS BROKEN???? - About to mask layer frame (%@) with a mask of frame (%@)", NSStringFromCGRect(layer.frame), NSStringFromCGRect(clipLayer.frame));
         layer.mask = clipLayer;
         [clipLayer release]; // because it was created with a +1 retain count
     }
@@ -680,6 +658,8 @@ static NSMutableDictionary* globalSVGKImageCache;
 		}
 	}
 	
+	if (saveParentNode)
+		element.parentNode = saveParentNode;
 	/**
 	 If none of the child nodes return a CALayer, we're safe to early-out here (and in fact we need to because
 	 calling setNeedsDisplay on an image layer hides the image). We can't just check childNodes.count because

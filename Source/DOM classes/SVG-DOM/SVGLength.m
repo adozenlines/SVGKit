@@ -117,6 +117,14 @@ static float cachedDevicePixelsPerInch;
 	return [self.internalCSSPrimitiveValue getFloatValue:CSS_PX];
 }
 
+-(float) pixelsValueWithDimension:(float)dimension
+{
+    if (self.internalCSSPrimitiveValue.primitiveType == CSS_PERCENTAGE)
+        return dimension * self.value / 100.0;
+    
+    return [self pixelsValue];
+}
+
 -(float) numberValue
 {
 	return [self.internalCSSPrimitiveValue getFloatValue:CSS_NUMBER];
@@ -188,7 +196,7 @@ static float cachedDevicePixelsPerInch;
 	
 	if( [platform hasPrefix:@"x86_64"])
 	{
-		DDLogCWarn(@"[%@] WARNING: you are running on the simulator; it's impossible for us to calculate centimeter/millimeter/inches units correctly", [self class]);
+		DDLogWarn(@"[%@] WARNING: you are running on the simulator; it's impossible for us to calculate centimeter/millimeter/inches units correctly", [self class]);
 		return 132.0f; // Simulator, running on desktop machine
 	}
 	
